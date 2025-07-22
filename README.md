@@ -66,7 +66,7 @@ Follow these steps to set up and run Aegis_Shasanam on your machine.
         ```bash
         ollama pull qwen2.5-coder:3b
         ```
-        (You can also use `mistral` or others, just update `OLLAMA_MODEL` in `scheduler_v0.py`)
+        (You can also use `mistral` or others, just update `OLLAMA_MODEL` in `scheduler.py`)
 
 ### Google Calendar API Setup
 
@@ -86,7 +86,7 @@ This project interacts with your Google Calendar. You need to create credentials
     *   Back in "Create OAuth client ID," select `Desktop app` as the Application type.
     *   Click `Create`.
     *   A panel will appear with your client ID and secret. Click **DOWNLOAD JSON**.
-    *   Rename the downloaded file to `credentials.json` and place it in the root directory of this project (next to `scheduler_v0.py`).
+    *   Rename the downloaded file to `credentials.json` and place it in the root directory of this project (next to `scheduler.py`).
 5.  **Add Yourself as a "Test User":**
     *   Still in the Google Cloud Console, go to **APIs & Services > OAuth consent screen**.
     *   Scroll down to the "Test users" section.
@@ -115,7 +115,7 @@ This project interacts with your Google Calendar. You need to create credentials
 1.  **Ensure Ollama is Running:** Make sure the Ollama server is active in the background on your machine.
 2.  **Run the Script:**
     ```bash
-    python scheduler_v0.py
+    python scheduler.py
     ```
 3.  **Authenticate with Google:**
     *   The first time you run it, a browser window will open.
