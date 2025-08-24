@@ -4,13 +4,16 @@ import json
 import requests
 import time
 import hashlib
+from pytz import timezone
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from default_variables import SCOPES, OLLAMA_API_URL, OLLAMA_MODEL, TASKS_FILE, PROMPT_FILE, AEGIS_CALENDAR_NAME, STATE_FILE, CHECK_INTERVAL_SECONDS, FEEDBACK_FILE
+from default_variables import SCOPES, OLLAMA_API_URL, OLLAMA_MODEL, TASKS_FILE, PROMPT_FILE, \
+    AEGIS_CALENDAR_NAME, STATE_FILE, CHECK_INTERVAL_SECONDS, FEEDBACK_FILE, LOCAL_TIMEZONE
+
 
 
 def setup_google_calendar_api():
@@ -60,20 +63,29 @@ def save_state(state):
 
 def get_primary_calendar_state_hash(service):
     """Fetches today's primary calendar events and returns a hash."""
-    now = datetime.datetime.utcnow()
-    # IMPORTANT: Ensure these times cover the *entire* day you care about.
-    # If the event is outside this window, it won't be picked up.
-    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0) # Changed to 0:00 UTC
-    end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0) # Changed to 23:59 UTC
+    
+    # 1. Get current local time
+    local_tz = timezone(LOCAL_TIMEZONE)
+    now_local = datetime.datetime.now(local_tz)
 
-    print(f"  [DEBUG] Fetching primary calendar events from {start_of_day.isoformat()}Z to {end_of_day.isoformat()}Z")
+    # 2. Define the start and end of *today* in local time
+    start_of_local_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_local_day = now_local.replace(hour=23, minute=59, second=59, microsecond=0)
+
+    # 3. Convert these local times to UTC for the API request
+    start_of_utc_day = start_of_local_day.astimezone(datetime.timezone.utc)
+    end_of_utc_day = end_of_local_day.astimezone(datetime.timezone.utc)
+
+    print(f"  [DEBUG] Local time: {now_local.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+    print(f"  [DEBUG] Fetching primary calendar events from {start_of_utc_day.isoformat()} to {end_of_utc_day.isoformat()} (UTC)")
 
     events_result = (
         service.events()
         .list(
             calendarId="primary",
-            timeMin=start_of_day.isoformat() + "Z",
-            timeMax=end_of_day.isoformat() + "Z",
+            timeMin=start_of_utc_day.isoformat(), # No 'Z' needed if it's already timezone-aware
+            timeMax=end_of_utc_day.isoformat(),   # No 'Z' needed if it's already timezone-aware
+            timeZone=LOCAL_TIMEZONE, # Hint to the API to interpret times in your local TZ
             singleEvents=True,
             orderBy="startTime",
         )
@@ -83,7 +95,10 @@ def get_primary_calendar_state_hash(service):
 
     print(f"  [DEBUG] Found {len(events)} events in primary calendar:")
     for event in events:
-        print(f"    - {event.get('summary')} from {event['start'].get('dateTime', event['start'].get('date'))}")
+        summary = event.get('summary', 'No Summary')
+        start_time_info = event['start'].get('dateTime', event['start'].get('date', 'Unknown Start'))
+        end_time_info = event['end'].get('dateTime', event['end'].get('date', 'Unknown End'))
+        print(f"    - {summary} from {start_time_info} to {end_time_info}")
 
     # Create a stable string representation of the events for hashing
     events_str = json.dumps(events, sort_keys=True)
