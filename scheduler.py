@@ -226,9 +226,6 @@ def create_events_from_schedule(service, calendar_id, schedule_str):
         time.sleep(0.2)  # Be nice to the API, avoid rate limiting
 
 
-# ... (get_free_slots, query_ollama, create_events_from_schedule remain the same) ...
-# NOTE: Make sure your create_events_from_schedule is the fixed version from the last step!
-
 # --- RESTRUCTURED MAIN FUNCTION ---
 def main():
     """Main execution block, now runs as a continuous loop."""

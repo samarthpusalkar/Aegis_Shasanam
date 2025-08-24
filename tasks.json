@@ -5,49 +5,56 @@
       "name": "Work on Python Library",
       "category": "deep_work",
       "min_duration_minutes": 60,
-      "max_duration_minutes": 180
+      "max_duration_minutes": 180,
+      "last_completed_utc": null
     },
     {
       "id": "learn_system_design",
       "name": "Study System Design",
       "category": "learning",
       "min_duration_minutes": 45,
-      "max_duration_minutes": 90
+      "max_duration_minutes": 90,
+      "last_completed_utc": null
     },
     {
       "id": "learn_chess",
       "name": "Chess.com Lessons/Puzzles",
       "category": "hobby_skill",
       "min_duration_minutes": 20,
-      "max_duration_minutes": 60
+      "max_duration_minutes": 60,
+      "last_completed_utc": null
     },
     {
       "id": "hobby_draw",
       "name": "Digital Drawing Practice",
       "category": "hobby_creative",
       "min_duration_minutes": 30,
-      "max_duration_minutes": 120
+      "max_duration_minutes": 120,
+      "last_completed_utc": null
     },
     {
       "id": "hobby_piano",
       "name": "Digital Piano Practice",
       "category": "hobby_creative",
       "min_duration_minutes": 20,
-      "max_duration_minutes": 45
+      "max_duration_minutes": 45,
+      "last_completed_utc": null
     },
     {
       "id": "health_meditate",
       "name": "Meditation Session",
       "category": "health",
       "min_duration_minutes": 5,
-      "max_duration_minutes": 20
+      "max_duration_minutes": 20,
+      "last_completed_utc": null
     },
     {
       "id": "health_movement",
       "name": "Light Exercise / Stretching",
       "category": "health",
       "min_duration_minutes": 10,
-      "max_duration_minutes": 20
+      "max_duration_minutes": 20,
+      "last_completed_utc": null
     }
   ]
 }

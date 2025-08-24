@@ -20,3 +20,9 @@ Your mission is to fill the free time slots with tasks from the library to creat
     "description": "A brief, motivating description for the calendar event."
   }
 ]
+
+**New Directive: Promote Variety and Balance**
+The 'last_completed_utc' field in the task library shows when a task was last done.
+Prioritize tasks that have not been completed recently or have a `null` value.
+Avoid scheduling the same 'deep_work' or 'learning' task category multiple times in one day
+if other categories haven't been touched in a while. Your goal is to ensure balanced growth.
