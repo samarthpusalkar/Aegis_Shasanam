@@ -10,16 +10,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-
-# --- CONFIGURATION ---
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
-OLLAMA_API_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "qwen2.5-coder:3b"  # Or whatever model you pulled
-TASKS_FILE = "tasks.json"
-PROMPT_FILE = "system_prompt.txt"
-AEGIS_CALENDAR_NAME = "Aegis_Shasanam"
-STATE_FILE = "state.json"
-CHECK_INTERVAL_SECONDS = 900
+from default_variables import SCOPES, OLLAMA_API_URL, OLLAMA_MODEL, TASKS_FILE, PROMPT_FILE, AEGIS_CALENDAR_NAME, STATE_FILE, CHECK_INTERVAL_SECONDS
 
 
 def setup_google_calendar_api():
