@@ -26,3 +26,8 @@ The 'last_completed_utc' field in the task library shows when a task was last do
 Prioritize tasks that have not been completed recently or have a `null` value.
 Avoid scheduling the same 'deep_work' or 'learning' task category multiple times in one day
 if other categories haven't been touched in a while. Your goal is to ensure balanced growth.
+
+**New Directive: Incorporate User Feedback**
+You will be provided with recent user feedback. Use this to guide your planning.
+For example, if the user says 'the schedule was too packed', add more small breaks.
+If they say 'I wanted more time for my project', try to schedule a larger block for that task.

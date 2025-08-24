@@ -7,6 +7,7 @@ OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', "qwen2.5-coder:3b")
 WHISPER_MODEL = os.getenv('WHISPER_MODEL', 'base.en')
 TASKS_FILE = "tasks.json"
 PROMPT_FILE = "system_prompt.txt"
+FEEDBACK_FILE = "feedback.log"
 AEGIS_CALENDAR_NAME = "Aegis_Shasanam"
 STATE_FILE = "state.json"
 CHECK_INTERVAL_SECONDS = 900
