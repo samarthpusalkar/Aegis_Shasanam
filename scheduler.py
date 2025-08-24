@@ -49,6 +49,23 @@ def find_or_create_aegis_calendar(service):
     return created_calendar["id"]
 
 # --- NEW HELPER FUNCTIONS ---
+def get_local_day_boundaries():
+    """
+    Returns the start and end of the current local day in UTC.
+    This ensures all functions use the same definition of 'today'.
+    """
+    local_tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
+    now_local = datetime.datetime.now(local_tz)
+    
+    start_of_local_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_local_day = now_local.replace(hour=23, minute=59, second=59, microsecond=0)
+    
+    # Convert to UTC for API calls
+    start_utc = start_of_local_day.astimezone(datetime.timezone.utc)
+    end_utc = end_of_local_day.astimezone(datetime.timezone.utc)
+    
+    return start_utc, end_utc
+
 def load_state():
     """Loads the last known state from the state file."""
     if not os.path.exists(STATE_FILE):
@@ -64,28 +81,22 @@ def save_state(state):
 def get_primary_calendar_state_hash(service):
     """Fetches today's primary calendar events and returns a hash."""
     
-    # 1. Get current local time
-    local_tz = timezone(LOCAL_TIMEZONE)
+    # Use the consistent helper function
+    start_utc, end_utc = get_local_day_boundaries()
+    
+    local_tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
     now_local = datetime.datetime.now(local_tz)
-
-    # 2. Define the start and end of *today* in local time
-    start_of_local_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_of_local_day = now_local.replace(hour=23, minute=59, second=59, microsecond=0)
-
-    # 3. Convert these local times to UTC for the API request
-    start_of_utc_day = start_of_local_day.astimezone(datetime.timezone.utc)
-    end_of_utc_day = end_of_local_day.astimezone(datetime.timezone.utc)
-
+    
     print(f"  [DEBUG] Local time: {now_local.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-    print(f"  [DEBUG] Fetching primary calendar events from {start_of_utc_day.isoformat()} to {end_of_utc_day.isoformat()} (UTC)")
+    print(f"  [DEBUG] Fetching primary calendar events from {start_utc.isoformat()} to {end_utc.isoformat()} (UTC)")
 
     events_result = (
         service.events()
         .list(
             calendarId="primary",
-            timeMin=start_of_utc_day.isoformat(), # No 'Z' needed if it's already timezone-aware
-            timeMax=end_of_utc_day.isoformat(),   # No 'Z' needed if it's already timezone-aware
-            timeZone=LOCAL_TIMEZONE, # Hint to the API to interpret times in your local TZ
+            timeMin=start_utc.isoformat(),
+            timeMax=end_utc.isoformat(),
+            timeZone=LOCAL_TIMEZONE,
             singleEvents=True,
             orderBy="startTime",
         )
@@ -100,23 +111,25 @@ def get_primary_calendar_state_hash(service):
         end_time_info = event['end'].get('dateTime', event['end'].get('date', 'Unknown End'))
         print(f"    - {summary} from {start_time_info} to {end_time_info}")
 
-    # Create a stable string representation of the events for hashing
     events_str = json.dumps(events, sort_keys=True)
     current_hash = hashlib.sha256(events_str.encode("utf-8")).hexdigest()
     print(f"  [DEBUG] Calculated hash: {current_hash}")
     return current_hash
 
 def clear_aegis_calendar(service, calendar_id):
-    """Deletes all events from the Aegis calendar for today."""
+    """Deletes all events from the Aegis calendar for today (local time)."""
     print(f"Clearing today's events from '{AEGIS_CALENDAR_NAME}'...")
-    now = datetime.datetime.utcnow()
-    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
+    
+    # Use the consistent helper function
+    start_utc, end_utc = get_local_day_boundaries()
+    
+    print(f"  [DEBUG] Clearing events from {start_utc.isoformat()} to {end_utc.isoformat()} (UTC)")
 
     events_result = service.events().list(
         calendarId=calendar_id,
-        timeMin=start_of_day.isoformat() + "Z",
-        timeMax=end_of_day.isoformat() + "Z",
+        timeMin=start_utc.isoformat(),
+        timeMax=end_utc.isoformat(),
+        timeZone=LOCAL_TIMEZONE,  # Provide timezone hint
         singleEvents=True
     ).execute()
     
@@ -128,23 +141,32 @@ def clear_aegis_calendar(service, calendar_id):
     for event in events:
         service.events().delete(calendarId=calendar_id, eventId=event['id']).execute()
         print(f"  - Deleted: {event.get('summary')}")
-        time.sleep(0.1) # Be nice to the API
+        time.sleep(0.1)
     print("Calendar cleared.")
 
-
 def get_free_slots(service):
-    """Gets busy slots for today and returns free slots."""
-    now = datetime.datetime.utcnow()
-    start_of_day = now.replace(hour=7, minute=0, second=0, microsecond=0)
-    end_of_day = now.replace(hour=23, minute=0, second=0, microsecond=0)
+    """Gets busy slots for today (in local time) and returns free slots."""
+    
+    # Get the current time in local timezone
+    local_tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
+    now_local = datetime.datetime.now(local_tz)
+    
+    # We plan from now until end of day
+    start_of_planning = now_local
+    _, end_utc = get_local_day_boundaries()  # Use helper for end of day
+    
+    # Convert current time to UTC for API
+    start_utc = start_of_planning.astimezone(datetime.timezone.utc)
 
-    print("Getting today's busy slots from primary calendar...")
+    print(f"  [DEBUG] Getting free slots from {start_utc.isoformat()} to {end_utc.isoformat()} (UTC)")
+
     events_result = (
         service.events()
         .list(
             calendarId="primary",
-            timeMin=start_of_day.isoformat() + "Z",
-            timeMax=end_of_day.isoformat() + "Z",
+            timeMin=start_utc.isoformat(),
+            timeMax=end_utc.isoformat(),
+            timeZone=LOCAL_TIMEZONE,
             singleEvents=True,
             orderBy="startTime",
         )
@@ -159,26 +181,25 @@ def get_free_slots(service):
         busy_slots.append({"start": start, "end": end})
 
     free_slots = []
-    last_end_time = start_of_day
+    last_end_time_utc = start_utc
+
     for busy in busy_slots:
-        busy_start = datetime.datetime.fromisoformat(
-            busy["start"].replace("Z", "+00:00")
-        )
-        if busy_start > last_end_time:
+        busy_start_utc = datetime.datetime.fromisoformat(busy["start"])
+        if busy_start_utc > last_end_time_utc:
             free_slots.append(
                 {
-                    "start": last_end_time.isoformat(),
-                    "end": busy_start.isoformat(),
+                    "start": last_end_time_utc.isoformat(),
+                    "end": busy_start_utc.isoformat(),
                 }
             )
-        last_end_time = max(
-            last_end_time,
-            datetime.datetime.fromisoformat(busy["end"].replace("Z", "+00:00")),
+        last_end_time_utc = max(
+            last_end_time_utc,
+            datetime.datetime.fromisoformat(busy["end"]),
         )
 
-    if last_end_time < end_of_day:
+    if last_end_time_utc < end_utc:
         free_slots.append(
-            {"start": last_end_time.isoformat(), "end": end_of_day.isoformat()}
+            {"start": last_end_time_utc.isoformat(), "end": end_utc.isoformat()}
         )
 
     return free_slots
@@ -220,35 +241,41 @@ def create_events_from_schedule(service, calendar_id, schedule_str):
     except json.JSONDecodeError:
         print("Error: LLM did not return valid JSON. Cannot create events.")
         print("LLM Output:", schedule_str)
-        return
+        return None # Return None on failure
 
-    # THE FIX: Check for the 'events' key and get the list from there.
     schedule_list = schedule_data.get("events")
-
-    # Add a check to ensure the list exists and is actually a list.
     if not schedule_list or not isinstance(schedule_list, list):
         print("Error: JSON from LLM is missing the 'events' list.")
         print("LLM Output:", schedule_str)
-        return
+        return None # Return None on failure
 
-    print(
-        f"\nCreating {len(schedule_list)} events in '{AEGIS_CALENDAR_NAME}' calendar..."
-    )
+    print(f"\nCreating {len(schedule_list)} events in '{AEGIS_CALENDAR_NAME}' calendar...")
     for item in schedule_list:
-        # Check if the item is a dictionary before trying to access it
         if not isinstance(item, dict):
             print(f"  - Skipping invalid item in schedule: {item}")
             continue
 
+        # --- THE FIX IS HERE ---
+        # The LLM provides a "naive" datetime string (e.g., "2025-08-26T09:00:00").
+        # We tell the Google Calendar API that this string represents a time
+        # in the user's local timezone.
         event = {
             "summary": item.get("summary", "Aegis Task"),
             "description": item.get("description", ""),
-            "start": {"dateTime": item["start_time"], "timeZone": "UTC"},
-            "end": {"dateTime": item["end_time"], "timeZone": "UTC"},
+            "start": {
+                "dateTime": item["start_time"],
+                "timeZone": LOCAL_TIMEZONE, # Explicitly set the timezone
+            },
+            "end": {
+                "dateTime": item["end_time"],
+                "timeZone": LOCAL_TIMEZONE, # Explicitly set the timezone
+            },
         }
         service.events().insert(calendarId=calendar_id, body=event).execute()
-        print(f"  - Created: {event['summary']} at {event['start']['dateTime']}")
-        time.sleep(0.2)  # Be nice to the API, avoid rate limiting
+        print(f"  - Created: {event['summary']} at {item['start_time']} ({LOCAL_TIMEZONE})")
+        time.sleep(0.2)
+    
+    return schedule_list # Return the list of created events on success
 
 
 def read_recent_feedback(lines_to_read=15):
