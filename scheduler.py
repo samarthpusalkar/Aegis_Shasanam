@@ -117,55 +117,87 @@ def get_primary_calendar_state_hash(service):
     return current_hash
 
 def clear_aegis_calendar(service, calendar_id):
-    """Deletes all events from the Aegis calendar for today (local time)."""
-    print(f"Clearing today's events from '{AEGIS_CALENDAR_NAME}'...")
+    """Deletes all Aegis events from today's structured day (7 AM - 11 PM local time)."""
+    print(f"Clearing today's Aegis events from '{AEGIS_CALENDAR_NAME}'...")
     
-    # Use the consistent helper function
-    start_utc, end_utc = get_local_day_boundaries()
-    
-    print(f"  [DEBUG] Clearing events from {start_utc.isoformat()} to {end_utc.isoformat()} (UTC)")
-
-    events_result = service.events().list(
-        calendarId=calendar_id,
-        timeMin=start_utc.isoformat(),
-        timeMax=end_utc.isoformat(),
-        timeZone=LOCAL_TIMEZONE,  # Provide timezone hint
-        singleEvents=True
-    ).execute()
-    
-    events = events_result.get("items", [])
-    if not events:
-        print("No events to clear.")
-        return
-
-    for event in events:
-        service.events().delete(calendarId=calendar_id, eventId=event['id']).execute()
-        print(f"  - Deleted: {event.get('summary')}")
-        time.sleep(0.1)
-    print("Calendar cleared.")
-
-def get_free_slots(service):
-    """Gets busy slots for today (in local time) and returns free slots."""
-    
-    # Get the current time in local timezone
+    # Get current time in local timezone
     local_tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
     now_local = datetime.datetime.now(local_tz)
     
-    # We plan from now until end of day
-    start_of_planning = now_local
-    _, end_utc = get_local_day_boundaries()  # Use helper for end of day
+    # Clear the entire day to be safe (00:00 to 23:59)
+    start_of_day_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_day_local = now_local.replace(hour=23, minute=59, second=59, microsecond=0)
     
-    # Convert current time to UTC for API
-    start_utc = start_of_planning.astimezone(datetime.timezone.utc)
+    # Convert to UTC for API
+    start_utc = start_of_day_local.astimezone(datetime.timezone.utc)
+    end_utc = end_of_day_local.astimezone(datetime.timezone.utc)
+    
+    print(f"  [DEBUG] Clearing events from:")
+    print(f"           Local day: {start_of_day_local.strftime('%Y-%m-%d %H:%M')} to {end_of_day_local.strftime('%Y-%m-%d %H:%M')}")
+    print(f"           UTC query: {start_utc.isoformat()} to {end_utc.isoformat()}")
 
-    print(f"  [DEBUG] Getting free slots from {start_utc.isoformat()} to {end_utc.isoformat()} (UTC)")
+    try:
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            timeMin=start_utc.isoformat(),
+            timeMax=end_utc.isoformat(),
+            timeZone=LOCAL_TIMEZONE,
+            singleEvents=True
+        ).execute()
+        
+        events = events_result.get("items", [])
+        print(f"  [DEBUG] Found {len(events)} events to delete:")
+        
+        if not events:
+            print("No events to clear.")
+            return
+
+        for event in events:
+            event_summary = event.get('summary', 'No Title')
+            event_start = event.get('start', {}).get('dateTime', 'Unknown time')
+            print(f"    - Deleting: {event_summary} at {event_start}")
+            
+            service.events().delete(calendarId=calendar_id, eventId=event['id']).execute()
+            time.sleep(0.1)
+        
+        print(f"Successfully cleared {len(events)} events.")
+        
+    except Exception as e:
+        print(f"Error while clearing calendar: {e}")
+        print(f"Calendar ID being used: {calendar_id}")
+        print(f"Time range: {start_utc.isoformat()} to {end_utc.isoformat()}")
+
+def get_free_slots(service):
+    """Gets busy slots for today's structured day (7 AM - 11 PM local time) and returns free slots."""
+    
+    # Get current time in local timezone
+    local_tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
+    now_local = datetime.datetime.now(local_tz)
+    
+    # Define the structured day boundaries (7 AM to 11 PM)
+    structured_day_start = now_local.replace(hour=7, minute=0, second=0, microsecond=0)
+    structured_day_end = now_local.replace(hour=23, minute=0, second=0, microsecond=0)
+    
+    # If it's already past 7 AM, start planning from current time
+    # Otherwise, start from 7 AM
+    planning_start_local = max(now_local, structured_day_start)
+    planning_end_local = structured_day_end
+    
+    # Convert to UTC for API calls
+    planning_start_utc = planning_start_local.astimezone(datetime.timezone.utc)
+    planning_end_utc = planning_end_local.astimezone(datetime.timezone.utc)
+
+    print(f"  [DEBUG] Structured day planning:")
+    print(f"           Local time now: {now_local.strftime('%H:%M')}")
+    print(f"           Planning from: {planning_start_local.strftime('%H:%M')} to {planning_end_local.strftime('%H:%M')} (local)")
+    print(f"           API query: {planning_start_utc.isoformat()} to {planning_end_utc.isoformat()} (UTC)")
 
     events_result = (
         service.events()
         .list(
             calendarId="primary",
-            timeMin=start_utc.isoformat(),
-            timeMax=end_utc.isoformat(),
+            timeMin=planning_start_utc.isoformat(),
+            timeMax=planning_end_utc.isoformat(),
             timeZone=LOCAL_TIMEZONE,
             singleEvents=True,
             orderBy="startTime",
@@ -174,6 +206,12 @@ def get_free_slots(service):
     )
     events = events_result.get("items", [])
 
+    print(f"  [DEBUG] Found {len(events)} events in planning window:")
+    for event in events:
+        summary = event.get('summary', 'No Summary')
+        start_time = event['start'].get('dateTime', 'Unknown')
+        print(f"    - {summary} at {start_time}")
+
     busy_slots = []
     for event in events:
         start = event["start"].get("dateTime", event["start"].get("date"))
@@ -181,7 +219,7 @@ def get_free_slots(service):
         busy_slots.append({"start": start, "end": end})
 
     free_slots = []
-    last_end_time_utc = start_utc
+    last_end_time_utc = planning_start_utc
 
     for busy in busy_slots:
         busy_start_utc = datetime.datetime.fromisoformat(busy["start"])
@@ -197,10 +235,18 @@ def get_free_slots(service):
             datetime.datetime.fromisoformat(busy["end"]),
         )
 
-    if last_end_time_utc < end_utc:
+    # Add the final free slot if there's time left in the structured day
+    if last_end_time_utc < planning_end_utc:
         free_slots.append(
-            {"start": last_end_time_utc.isoformat(), "end": end_utc.isoformat()}
+            {"start": last_end_time_utc.isoformat(), "end": planning_end_utc.isoformat()}
         )
+
+    print(f"  [DEBUG] Calculated {len(free_slots)} free slots:")
+    for i, slot in enumerate(free_slots):
+        start_local = datetime.datetime.fromisoformat(slot['start']).astimezone(local_tz)
+        end_local = datetime.datetime.fromisoformat(slot['end']).astimezone(local_tz)
+        duration = (end_local - start_local).total_seconds() / 60
+        print(f"    Slot {i+1}: {start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M')} ({duration:.0f} mins)")
 
     return free_slots
 
