@@ -1,22 +1,24 @@
 import datetime
 import os.path
 import json
-import requests
 import time
 import hashlib
-from pytz import timezone
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import google.generativeai as genai
+
 from default_variables import SCOPES, OLLAMA_API_URL, OLLAMA_MODEL, TASKS_FILE, PROMPT_FILE, \
-    AEGIS_CALENDAR_NAME, STATE_FILE, CHECK_INTERVAL_SECONDS, FEEDBACK_FILE, LOCAL_TIMEZONE
+    AEGIS_CALENDAR_NAME, STATE_FILE, CHECK_INTERVAL_SECONDS, FEEDBACK_FILE, LOCAL_TIMEZONE, GEMINI_API_KEY
 
 
+# --- Core Google API and Calendar Functions ---
 
 def setup_google_calendar_api():
+    """Initializes and returns the Google Calendar API service object."""
     creds = None
     if os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
@@ -24,14 +26,11 @@ def setup_google_calendar_api():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                "credentials.json", SCOPES
-            )
+            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
             creds = flow.run_local_server(port=0)
         with open("token.json", "w") as token:
             token.write(creds.to_json())
     return build("calendar", "v3", credentials=creds)
-
 
 def find_or_create_aegis_calendar(service):
     """Finds the Aegis_Shasanam calendar or creates it if it doesn't exist."""
@@ -41,30 +40,21 @@ def find_or_create_aegis_calendar(service):
         if calendar_list_entry["summary"] == AEGIS_CALENDAR_NAME:
             print("Found calendar.")
             return calendar_list_entry["id"]
-
     print("Calendar not found. Creating it...")
     new_calendar = {"summary": AEGIS_CALENDAR_NAME}
     created_calendar = service.calendars().insert(body=new_calendar).execute()
     print("Calendar created.")
     return created_calendar["id"]
 
-# --- NEW HELPER FUNCTIONS ---
+# --- State and Time Helper Functions ---
+
 def get_local_day_boundaries():
-    """
-    Returns the start and end of the current local day in UTC.
-    This ensures all functions use the same definition of 'today'.
-    """
+    """Returns the start and end of the current local day in UTC."""
     local_tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
     now_local = datetime.datetime.now(local_tz)
-    
     start_of_local_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_local_day = now_local.replace(hour=23, minute=59, second=59, microsecond=0)
-    
-    # Convert to UTC for API calls
-    start_utc = start_of_local_day.astimezone(datetime.timezone.utc)
-    end_utc = end_of_local_day.astimezone(datetime.timezone.utc)
-    
-    return start_utc, end_utc
+    return start_of_local_day.astimezone(datetime.timezone.utc), end_of_local_day.astimezone(datetime.timezone.utc)
 
 def load_state():
     """Loads the last known state from the state file."""
@@ -80,176 +70,91 @@ def save_state(state):
 
 def get_primary_calendar_state_hash(service):
     """Fetches today's primary calendar events and returns a hash."""
-    
-    # Use the consistent helper function
     start_utc, end_utc = get_local_day_boundaries()
-    
-    local_tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
-    now_local = datetime.datetime.now(local_tz)
-    
-    print(f"  [DEBUG] Local time: {now_local.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-    print(f"  [DEBUG] Fetching primary calendar events from {start_utc.isoformat()} to {end_utc.isoformat()} (UTC)")
-
-    events_result = (
-        service.events()
-        .list(
-            calendarId="primary",
-            timeMin=start_utc.isoformat(),
-            timeMax=end_utc.isoformat(),
-            timeZone=LOCAL_TIMEZONE,
-            singleEvents=True,
-            orderBy="startTime",
-        )
-        .execute()
-    )
+    events_result = service.events().list(
+        calendarId="primary", timeMin=start_utc.isoformat(), timeMax=end_utc.isoformat(),
+        timeZone=LOCAL_TIMEZONE, singleEvents=True, orderBy="startTime"
+    ).execute()
     events = events_result.get("items", [])
-
-    print(f"  [DEBUG] Found {len(events)} events in primary calendar:")
-    for event in events:
-        summary = event.get('summary', 'No Summary')
-        start_time_info = event['start'].get('dateTime', event['start'].get('date', 'Unknown Start'))
-        end_time_info = event['end'].get('dateTime', event['end'].get('date', 'Unknown End'))
-        print(f"    - {summary} from {start_time_info} to {end_time_info}")
-
     events_str = json.dumps(events, sort_keys=True)
-    current_hash = hashlib.sha256(events_str.encode("utf-8")).hexdigest()
-    print(f"  [DEBUG] Calculated hash: {current_hash}")
-    return current_hash
+    return hashlib.sha256(events_str.encode("utf-8")).hexdigest()
 
-def clear_aegis_calendar(service, calendar_id):
-    """Deletes all Aegis events from today's structured day (7 AM - 11 PM local time)."""
-    print(f"Clearing today's Aegis events from '{AEGIS_CALENDAR_NAME}'...")
-    
-    # Get current time in local timezone
+# --- Adaptive Scheduling Core Functions ---
+
+def clear_future_aegis_events(service, calendar_id):
+    """Deletes Aegis events from now until the end of the day."""
+    print(f"Clearing future Aegis events from '{AEGIS_CALENDAR_NAME}'...")
     local_tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
     now_local = datetime.datetime.now(local_tz)
-    
-    # Clear the entire day to be safe (00:00 to 23:59)
-    start_of_day_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_day_local = now_local.replace(hour=23, minute=59, second=59, microsecond=0)
-    
-    # Convert to UTC for API
-    start_utc = start_of_day_local.astimezone(datetime.timezone.utc)
+
+    start_utc = now_local.astimezone(datetime.timezone.utc)
     end_utc = end_of_day_local.astimezone(datetime.timezone.utc)
+
+    events_result = service.events().list(
+        calendarId=calendar_id, timeMin=start_utc.isoformat(), timeMax=end_utc.isoformat(),
+        timeZone=LOCAL_TIMEZONE, singleEvents=True
+    ).execute()
+    events = events_result.get("items", [])
     
-    print(f"  [DEBUG] Clearing events from:")
-    print(f"           Local day: {start_of_day_local.strftime('%Y-%m-%d %H:%M')} to {end_of_day_local.strftime('%Y-%m-%d %H:%M')}")
-    print(f"           UTC query: {start_utc.isoformat()} to {end_utc.isoformat()}")
+    if not events:
+        print("No future events to clear.")
+        return
 
-    try:
-        events_result = service.events().list(
-            calendarId=calendar_id,
-            timeMin=start_utc.isoformat(),
-            timeMax=end_utc.isoformat(),
-            timeZone=LOCAL_TIMEZONE,
-            singleEvents=True
-        ).execute()
-        
-        events = events_result.get("items", [])
-        print(f"  [DEBUG] Found {len(events)} events to delete:")
-        
-        if not events:
-            print("No events to clear.")
-            return
+    print(f"  [DEBUG] Found {len(events)} future events to delete.")
+    for event in events:
+        service.events().delete(calendarId=calendar_id, eventId=event['id']).execute()
+    print(f"Successfully cleared {len(events)} future events.")
 
-        for event in events:
-            event_summary = event.get('summary', 'No Title')
-            event_start = event.get('start', {}).get('dateTime', 'Unknown time')
-            print(f"    - Deleting: {event_summary} at {event_start}")
-            
-            service.events().delete(calendarId=calendar_id, eventId=event['id']).execute()
-            time.sleep(0.1)
-        
-        print(f"Successfully cleared {len(events)} events.")
-        
-    except Exception as e:
-        print(f"Error while clearing calendar: {e}")
-        print(f"Calendar ID being used: {calendar_id}")
-        print(f"Time range: {start_utc.isoformat()} to {end_utc.isoformat()}")
-
-def get_free_slots(service):
-    """Gets busy slots for today's structured day (7 AM - 11 PM local time) and returns free slots."""
-    
-    # Get current time in local timezone
+def get_daily_context(service, aegis_calendar_id):
+    """Gets past Aegis events and future free slots for adaptive planning."""
     local_tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
     now_local = datetime.datetime.now(local_tz)
-    
-    # Define the structured day boundaries (7 AM to 11 PM)
+
+    # Get Past/In-Progress Aegis Events
+    day_start_utc, _ = get_local_day_boundaries()
+    now_utc = now_local.astimezone(datetime.timezone.utc)
+    past_events_result = service.events().list(
+        calendarId=aegis_calendar_id, timeMin=day_start_utc.isoformat(),
+        timeMax=now_utc.isoformat(), singleEvents=True
+    ).execute()
+    past_aegis_events = past_events_result.get("items", [])
+
+    # Calculate Future Free Slots
     structured_day_start = now_local.replace(hour=7, minute=0, second=0, microsecond=0)
     structured_day_end = now_local.replace(hour=23, minute=0, second=0, microsecond=0)
-    
-    # If it's already past 7 AM, start planning from current time
-    # Otherwise, start from 7 AM
     planning_start_local = max(now_local, structured_day_start)
     planning_end_local = structured_day_end
-    
-    # Convert to UTC for API calls
     planning_start_utc = planning_start_local.astimezone(datetime.timezone.utc)
     planning_end_utc = planning_end_local.astimezone(datetime.timezone.utc)
 
-    print(f"  [DEBUG] Structured day planning:")
-    print(f"           Local time now: {now_local.strftime('%H:%M')}")
-    print(f"           Planning from: {planning_start_local.strftime('%H:%M')} to {planning_end_local.strftime('%H:%M')} (local)")
-    print(f"           API query: {planning_start_utc.isoformat()} to {planning_end_utc.isoformat()} (UTC)")
+    future_events_result = service.events().list(
+        calendarId="primary", timeMin=planning_start_utc.isoformat(),
+        timeMax=planning_end_utc.isoformat(), timeZone=LOCAL_TIMEZONE,
+        singleEvents=True, orderBy="startTime"
+    ).execute()
+    future_busy_events = future_events_result.get("items", [])
 
-    events_result = (
-        service.events()
-        .list(
-            calendarId="primary",
-            timeMin=planning_start_utc.isoformat(),
-            timeMax=planning_end_utc.isoformat(),
-            timeZone=LOCAL_TIMEZONE,
-            singleEvents=True,
-            orderBy="startTime",
-        )
-        .execute()
-    )
-    events = events_result.get("items", [])
-
-    print(f"  [DEBUG] Found {len(events)} events in planning window:")
-    for event in events:
-        summary = event.get('summary', 'No Summary')
-        start_time = event['start'].get('dateTime', 'Unknown')
-        print(f"    - {summary} at {start_time}")
-
-    busy_slots = []
-    for event in events:
-        start = event["start"].get("dateTime", event["start"].get("date"))
-        end = event["end"].get("dateTime", event["end"].get("date"))
-        busy_slots.append({"start": start, "end": end})
-
-    free_slots = []
+    future_free_slots = []
     last_end_time_utc = planning_start_utc
-
-    for busy in busy_slots:
-        busy_start_utc = datetime.datetime.fromisoformat(busy["start"])
+    for busy in future_busy_events:
+        start_str = busy["start"].get("dateTime")
+        end_str = busy["end"].get("dateTime")
+        if not start_str or not end_str:
+            print(f"  [WARN] Skipping all-day event '{busy.get('summary')}' in free slot calculation.")
+            continue
+        
+        busy_start_utc = datetime.datetime.fromisoformat(start_str)
         if busy_start_utc > last_end_time_utc:
-            free_slots.append(
-                {
-                    "start": last_end_time_utc.isoformat(),
-                    "end": busy_start_utc.isoformat(),
-                }
-            )
-        last_end_time_utc = max(
-            last_end_time_utc,
-            datetime.datetime.fromisoformat(busy["end"]),
-        )
-
-    # Add the final free slot if there's time left in the structured day
+            future_free_slots.append({"start": last_end_time_utc.isoformat(), "end": busy_start_utc.isoformat()})
+        last_end_time_utc = max(last_end_time_utc, datetime.datetime.fromisoformat(end_str))
+    
     if last_end_time_utc < planning_end_utc:
-        free_slots.append(
-            {"start": last_end_time_utc.isoformat(), "end": planning_end_utc.isoformat()}
-        )
+        future_free_slots.append({"start": last_end_time_utc.isoformat(), "end": planning_end_utc.isoformat()})
 
-    print(f"  [DEBUG] Calculated {len(free_slots)} free slots:")
-    for i, slot in enumerate(free_slots):
-        start_local = datetime.datetime.fromisoformat(slot['start']).astimezone(local_tz)
-        end_local = datetime.datetime.fromisoformat(slot['end']).astimezone(local_tz)
-        duration = (end_local - start_local).total_seconds() / 60
-        print(f"    Slot {i+1}: {start_local.strftime('%H:%M')} - {end_local.strftime('%H:%M')} ({duration:.0f} mins)")
+    return {"past_events": past_aegis_events, "future_free_slots": future_free_slots}
 
-    return free_slots
-
+# --- LLM and Event Creation Functions ---
 def query_ollama(prompt_data, feedback_text):
     """Sends the structured prompt and feedback to the local Ollama server."""
     print("\nQuerying Aegis (Ollama LLM) with feedback...")
@@ -280,49 +185,67 @@ Based on all this information and your core directives, generate the JSON schedu
     response_json = json.loads(response.text)
     return response_json["response"]
 
+def query_gemini(prompt_data, feedback_text):
+    """Sends the structured prompt and feedback to the Gemini API."""
+    print("\nQuerying Aegis (Gemini 2.5 Flash)...")
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-2.5-flash')
+
+    with open(PROMPT_FILE, "r") as f:
+        system_prompt = f.read()
+
+    full_prompt = f"""
+System Instructions:
+{system_prompt}
+---
+Here is the data for today:
+- Current Time: {datetime.datetime.now().isoformat()}
+- Available Tasks (with last completion time): {json.dumps(prompt_data['tasks'], indent=2)}
+- Completed or In-Progress Tasks Today: {json.dumps(prompt_data['past_events'], indent=2)}
+- Future Free Time Slots: {json.dumps(prompt_data['future_free_slots'], indent=2)}
+- Recent User Feedback:
+---
+{feedback_text}
+---
+Based on all this information, generate the JSON schedule for ONLY the future free slots.
+"""
+    try:
+        response = model.generate_content(
+            full_prompt,
+            generation_config=genai.types.GenerationConfig(response_mime_type="application/json")
+        )
+        return response.text
+    except Exception as e:
+        print(f"An error occurred while querying Gemini: {e}")
+        return None
+
 def create_events_from_schedule(service, calendar_id, schedule_str):
     """Parses the LLM schedule and creates events on the specified calendar."""
     try:
         schedule_data = json.loads(schedule_str)
-    except json.JSONDecodeError:
+        schedule_list = schedule_data.get("events")
+        if not schedule_list or not isinstance(schedule_list, list):
+            print("Error: JSON from LLM is missing the 'events' list.")
+            return None
+    except (json.JSONDecodeError, AttributeError):
         print("Error: LLM did not return valid JSON. Cannot create events.")
         print("LLM Output:", schedule_str)
-        return None # Return None on failure
+        return None
 
-    schedule_list = schedule_data.get("events")
-    if not schedule_list or not isinstance(schedule_list, list):
-        print("Error: JSON from LLM is missing the 'events' list.")
-        print("LLM Output:", schedule_str)
-        return None # Return None on failure
-
-    print(f"\nCreating {len(schedule_list)} events in '{AEGIS_CALENDAR_NAME}' calendar...")
+    print(f"\nCreating {len(schedule_list)} new events in '{AEGIS_CALENDAR_NAME}' calendar...")
     for item in schedule_list:
-        if not isinstance(item, dict):
-            print(f"  - Skipping invalid item in schedule: {item}")
-            continue
-
-        # --- THE FIX IS HERE ---
-        # The LLM provides a "naive" datetime string (e.g., "2025-08-26T09:00:00").
-        # We tell the Google Calendar API that this string represents a time
-        # in the user's local timezone.
         event = {
             "summary": item.get("summary", "Aegis Task"),
             "description": item.get("description", ""),
-            "start": {
-                "dateTime": item["start_time"],
-                "timeZone": LOCAL_TIMEZONE, # Explicitly set the timezone
-            },
-            "end": {
-                "dateTime": item["end_time"],
-                "timeZone": LOCAL_TIMEZONE, # Explicitly set the timezone
-            },
+            "start": {"dateTime": item["start_time"], "timeZone": LOCAL_TIMEZONE},
+            "end": {"dateTime": item["end_time"], "timeZone": LOCAL_TIMEZONE},
         }
         service.events().insert(calendarId=calendar_id, body=event).execute()
         print(f"  - Created: {event['summary']} at {item['start_time']} ({LOCAL_TIMEZONE})")
         time.sleep(0.2)
-    
-    return schedule_list # Return the list of created events on success
+    return schedule_list
 
+# --- Feedback and Task Update Functions ---
 
 def read_recent_feedback(lines_to_read=15):
     """Reads the last few lines of the feedback log."""
@@ -330,81 +253,71 @@ def read_recent_feedback(lines_to_read=15):
         return "No feedback has been provided yet."
     try:
         with open(FEEDBACK_FILE, "r") as f:
-            lines = f.readlines()
-            recent_lines = lines[-lines_to_read:]
-            return "".join(recent_lines)
+            return "".join(f.readlines()[-lines_to_read:])
     except Exception as e:
         print(f"Could not read feedback file: {e}")
         return "Error reading feedback file."
 
 def update_tasks_completion(schedule_list):
     """Updates the last_completed_utc field in tasks.json."""
-    if not os.path.exists(TASKS_FILE):
-        print(f"Error: {TASKS_FILE} not found. Cannot update task completions.")
-        return
-
-    with open(TASKS_FILE, "r") as f:
+    with open(TASKS_FILE, "r+") as f:
         tasks_data = json.load(f)
-
-    # Create a map for faster lookups
-    task_map = {task['id']: task for task in tasks_data['tasks']}
-
-    for event in schedule_list:
-        task_id = event.get("task_id")
-        if task_id in task_map:
-            task_map[task_id]["last_completed_utc"] = event.get("end_time")
-            print(f"  - Updated completion time for task: {task_id}")
-
-    with open(TASKS_FILE, "w") as f:
+        task_map = {task['id']: task for task in tasks_data['tasks']}
+        for event in schedule_list:
+            task_id = event.get("task_id")
+            if task_id in task_map:
+                task_map[task_id]["last_completed_utc"] = event.get("end_time")
+        f.seek(0)
         json.dump(tasks_data, f, indent=2)
+        f.truncate()
     print("Task completion times have been updated.")
 
+# --- Main Execution Loop ---
 
 def main():
-    """Main execution block, now runs as a continuous loop."""
+    """Main execution block, runs as a continuous adaptive daemon."""
     service = setup_google_calendar_api()
     aegis_calendar_id = find_or_create_aegis_calendar(service)
     
-    print("\n--- Aegis_Shasanam Daemon Initialized ---")
+    print("\n--- Aegis_Shasanam Daemon v4 (Adaptive) Initialized ---")
+    print(f"Using timezone: {LOCAL_TIMEZONE}")
     print(f"Checking for calendar changes every {CHECK_INTERVAL_SECONDS} seconds.")
 
     while True:
         try:
             print(f"\n[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Checking for changes...")
-            
             state = load_state()
-            print(f"  [DEBUG] Last known hash from state: {state.get('last_known_hash')}")
             current_hash = get_primary_calendar_state_hash(service)
 
             if current_hash != state.get("last_known_hash"):
-                print("!!! Change detected in primary calendar. Re-planning schedule. !!!")
-                
-                # 1. Clear the old schedule
-                clear_aegis_calendar(service, aegis_calendar_id)
+                print("!!! Change detected. Adaptively re-planning schedule. !!!")
 
-                # 2. Get new free slots
-                free_slots = get_free_slots(service)
+                # 1. Get the full context of the day (past events and future slots)
+                daily_context = get_daily_context(service, aegis_calendar_id)
 
-                # 3. Read tasks and recent feedback
+                # 2. Read tasks and recent feedback
                 with open(TASKS_FILE, "r") as f:
                     tasks_data = json.load(f)
                 feedback = read_recent_feedback()
 
-                # 4. Query LLM with all context
-                prompt_data = {"tasks": tasks_data["tasks"], "free_slots": free_slots}
-                suggested_schedule_str = query_ollama(prompt_data, feedback)
-                
-                # 5. Create new events
-                schedule_list = create_events_from_schedule(service, aegis_calendar_id, suggested_schedule_str)
-                
-                # 6. Update task completion times if schedule was created
-                if schedule_list:
-                    update_tasks_completion(schedule_list)
+                # 3. Query Gemini with the new, richer context
+                prompt_data = {
+                    "tasks": tasks_data["tasks"],
+                    "past_events": daily_context["past_events"],
+                    "future_free_slots": daily_context["future_free_slots"]
+                }
+                suggested_schedule_str = query_gemini(prompt_data, feedback)
 
-                # 7. Save the new state
+                # 4. Adapt the schedule: clear future and create new events
+                if suggested_schedule_str:
+                    clear_future_aegis_events(service, aegis_calendar_id)
+                    schedule_list = create_events_from_schedule(service, aegis_calendar_id, suggested_schedule_str)
+                    if schedule_list:
+                        update_tasks_completion(schedule_list)
+
+                # 5. Save the new state
                 save_state({"last_known_hash": current_hash})
-                print("--- Re-planning complete. ---")
-
+                print("--- Adaptive re-planning complete. ---")
             else:
                 print("No changes detected. Standing by.")
 
@@ -412,13 +325,10 @@ def main():
 
         except HttpError as error:
             print(f"An API error occurred: {error}")
-            print("Retrying after interval...")
             time.sleep(CHECK_INTERVAL_SECONDS)
         except Exception as e:
             print(f"An unexpected error occurred: {e}")
-            print("Retrying after interval...")
             time.sleep(CHECK_INTERVAL_SECONDS)
-
 
 if __name__ == "__main__":
     main()
