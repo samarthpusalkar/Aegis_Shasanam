@@ -28,7 +28,7 @@
       "id": "hobby_draw",
       "name": "Digital Drawing Practice",
       "category": "hobby_creative",
-      "min_duration_minutes": 30,
+      "min_duration_minutes": 40,
       "max_duration_minutes": 120,
       "last_completed_utc": null
     },
@@ -36,24 +36,24 @@
       "id": "hobby_piano",
       "name": "Digital Piano Practice",
       "category": "hobby_creative",
-      "min_duration_minutes": 20,
-      "max_duration_minutes": 45,
+      "min_duration_minutes": 40,
+      "max_duration_minutes": 120,
       "last_completed_utc": null
     },
     {
       "id": "health_meditate",
       "name": "Meditation Session",
       "category": "health",
-      "min_duration_minutes": 5,
-      "max_duration_minutes": 20,
+      "min_duration_minutes": 20,
+      "max_duration_minutes": 45,
       "last_completed_utc": null
     },
     {
       "id": "health_movement",
       "name": "Light Exercise / Stretching",
       "category": "health",
-      "min_duration_minutes": 10,
-      "max_duration_minutes": 20,
+      "min_duration_minutes": 15,
+      "max_duration_minutes": 30,
       "last_completed_utc": null
     }
   ]
